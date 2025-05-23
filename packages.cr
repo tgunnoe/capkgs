@@ -217,7 +217,7 @@ class CAPkgs
 
         parser.on "--from-store=URL", "Public cache URL that users fetch closures from" { |v| @from_store = v }
         parser.on "--to=URL", "Nix store URL to copy CA outputs to" { |v| @to = v }
-        parser.on "--systems=A,B", "systems to process" { |v| @systems = v.split.map(&.strip) }
+        parser.on "--systems=A,B", "systems to process" { |v| @systems = v.split(',').map(&.strip) }
         parser.on "--no-update", "skip updating release info" { |v| @update = false }
         parser.on "--no-commit", "skip commiting packages.json" { |v| @commit = false }
 
@@ -307,7 +307,16 @@ class CAPkgs
     end
 
     def flake_url
-      name.gsub("${tag}", commit).gsub("${system}", @system)
+      # Replace system template and commit template in the package name
+      processed_name = name.gsub("${tag}", commit).gsub("${system}", @system)
+      
+      # Check if the name already contains system-specific attribute path
+      if processed_name.includes?("#packages.") && !processed_name.includes?("#packages.#{@system}")
+        # If it does but uses a different system identifier, replace it
+        processed_name.gsub(/#packages\.[^\.]+\./, "#packages.#{@system}.")
+      else
+        processed_name
+      end
     end
 
     def cache_path(file)
