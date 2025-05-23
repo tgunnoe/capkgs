@@ -7,9 +7,9 @@ secret_key := env_var_or_default('NIX_SIGNING_KEY_FILE', "hydra_key")
 # Based on projects.json, upload the CA contents and update packages.json
 packages *ARGS:
     ./packages.cr \
-        --to "s3://devx?secret-key={{secret_key}}&endpoint=${S3_ENDPOINT}&region=auto&compression=zstd" \
+        --to "s3://cache.sc.iog.io?secret-key={{secret_key}}&region=${AWS_REGION}&compression=zstd" \
         --from-store https://cache.iog.io \
-        --systems x86_64-linux
+        --systems x86_64-linux,aarch64-darwin
 
 # Based on projects.json, upload the CA contents and update packages.json
 ci:
@@ -19,13 +19,13 @@ ci:
 
 # download and uncompress the cache folder
 cache-download:
-    @just -v rclone copyto s3://devx/capkgs/cache.tar.zst cache.tar.zst
+    @just -v rclone copyto s3://cache.sc.iog.io/capkgs/cache.tar.zst cache.tar.zst
     tar xf cache.tar.zst
 
 # compress and upload the cache folder
 cache-upload:
     tar cfa cache.tar.zst cache
-    @just -v rclone copyto cache.tar.zst s3://devx/capkgs/cache.tar.zst
+    @just -v rclone copyto cache.tar.zst s3://cache.sc.iog.io/capkgs/cache.tar.zst
 
 rclone *ARGS:
     #!/usr/bin/env nu
@@ -56,31 +56,54 @@ push:
 check:
     #!/usr/bin/env nu
 
-    # Obtain the package set
-    let pkgs = (nix eval ".#packages.x86_64-linux" --apply builtins.attrNames --json | from json)
+    # Systems to check
+    let systems = ["x86_64-linux", "aarch64-darwin"]
 
-    # Obtain a drv for each package since building direct attrs with embedded '"' doesn't work
-    let drvs = ($pkgs | par-each {|pkg|
-        print $"Eval drv for package ($pkg)..."
-        do { nix eval ".#packages.x86_64-linux" --raw --apply $"'pkgs: pkgs."($pkg | str replace '"' '\"' --all)".drvPath'" }
-            | complete
-    })
+    # Check each system
+    for system in $systems {
+        echo $"\nChecking packages for ($system)..."
 
-    # Obtain package builds from the drvs
-    let $builds = ($drvs | par-each {|drv|
-        print $"Building ($drv.stdout)..."
-        do { nix build --no-link --print-out-paths $"($drv.stdout)^*" }
-            | complete
-    })
+        # Obtain the package set
+        let pkgs = (do { nix eval ".#packages.$system" --apply builtins.attrNames --json } | complete)
+        
+        if $pkgs.exit_code != 0 {
+            echo $"Error getting packages for ($system): ($pkgs.stderr)"
+            continue
+        }
+        
+        let pkgs_list = ($pkgs.stdout | from json)
+        
+        # Display packages
+        echo $"Packages for ($system):"
+        echo $pkgs_list
+        echo ""
 
-    print "Packages evaluated:"
-    print $pkgs
-    print
+        # Obtain a drv for each package since building direct attrs with embedded '"' doesn't work
+        if $system == (uname -m) + "-" + (uname -s | str downcase) {
+            echo $"Evaluating derivations for ($system)..."
+            let drvs = ($pkgs_list | par-each {|pkg|
+                print $"Eval drv for package ($pkg)..."
+                do { nix eval ".#packages.$system" --raw --apply $"'pkgs: pkgs."($pkg | str replace '"' '\"' --all)".drvPath'" }
+                    | complete
+            })
 
-    print "Derivations results:"
-    print $drvs | table -e
-    print
+            # Obtain package builds from the drvs
+            echo $"Building packages for ($system)..."
+            let $builds = ($drvs | par-each {|drv|
+                print $"Building ($drv.stdout)..."
+                do { nix build --no-link --print-out-paths $"($drv.stdout)^*" }
+                    | complete
+            })
 
-    print "Build results:"
-    $builds | table -e
+            echo "Derivations results:"
+            echo $drvs | table -e
+            echo ""
+
+            echo "Build results:"
+            echo $builds | table -e
+            echo ""
+        } else {
+            echo $"Skipping building for non-native ($system)"
+        }
+    }
 

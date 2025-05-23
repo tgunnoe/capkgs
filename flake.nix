@@ -30,7 +30,7 @@
       )
       validPackages;
 
-    system = "x86_64-linux";
+    supportedSystems = [ "x86_64-linux" "aarch64-darwin" ];
 
     # These inputs are purely used for the devShell and hydra to avoid any
     # evaluation and download of nixpkgs for just building a package.
@@ -40,48 +40,55 @@
     };
 
     # At least 2.17 is required for this fix: https://github.com/NixOS/nix/pull/4282
-    inherit (flakes.nix.packages.${system}) nix;
+    nixForSystem = system: flakes.nix.packages.${system}.nix;
+    
+    # Generate an attribute set for each supported system
+    forAllSystems = f: builtins.listToAttrs (map (system: { name = system; value = f system; }) supportedSystems);
   in
     {
-      hydraJobs.required = aggregate {
-        name = "required";
-        constituents = attrValues inputs.self.packages.x86_64-linux;
+      hydraJobs = {
+        required = aggregate {
+          name = "required";
+          constituents = attrValues inputs.self.packages.x86_64-linux;
+        };
       };
 
-      devShells.${system}.default = with (flakes.nixpkgs.legacyPackages.${system});
-        mkShell {
-          nativeBuildInputs = [
-            crystal
-            crystalline
-            curl
-            gitMinimal
-            just
-            nix
-            nushell
-            pcre
-            rclone
-            treefmt
-            watchexec
-            gnutar
-            zstd
-          ];
+      devShells = forAllSystems (system: {
+        default = with (flakes.nixpkgs.legacyPackages.${system});
+          mkShell {
+            nativeBuildInputs = [
+              crystal
+              crystalline
+              curl
+              gitMinimal
+              just
+              (nixForSystem system)
+              nushell
+              pcre
+              rclone
+              treefmt
+              watchexec
+              gnutar
+              zstd
+            ];
 
-          shellHook = let
-            pre-push = writeShellApplication {
-              name = "pre-push";
-              text = ''
-                if ! jq -e < projects.json &> /dev/null; then
-                  echo "ERROR: Invalid JSON found in projects.json"
-                  exit 1
-                fi
-              '';
-            };
-          in ''
-            if [ -z "$CI" ] && [ -d .git/hooks ] && ! [ -f .git/hooks/pre-push ]; then
-              ln -s ${pre-push}/bin/pre-push .git/hooks/pre-push
-            fi
-          '';
-        };
+            shellHook = let
+              pre-push = writeShellApplication {
+                name = "pre-push";
+                text = ''
+                  if ! jq -e < projects.json &> /dev/null; then
+                    echo "ERROR: Invalid JSON found in projects.json"
+                    exit 1
+                  fi
+                '';
+              };
+            in ''
+              if [ -z "$CI" ] && [ -d .git/hooks ] && ! [ -f .git/hooks/pre-push ]; then
+                ln -s ${pre-push}/bin/pre-push .git/hooks/pre-push
+              fi
+            '';
+          };
+      });
     }
     // packages;
 }
